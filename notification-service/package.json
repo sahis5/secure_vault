@@ -1,0 +1,22 @@
+{
+  "name": "notification-service",
+  "version": "1.0.0",
+  "description": "Notification service for Self-Healing Cloud",
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "ts-node src/main.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.3",
+    "nodemailer": "^6.9.7",
+    "firebase-admin": "^11.11.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.2.2",
+    "ts-node": "^10.9.1",
+    "@types/node": "^20.8.10",
+    "@types/amqplib": "^0.10.4",
+    "@types/nodemailer": "^6.4.14"
+  }
+}
