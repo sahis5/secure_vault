@@ -1,8 +1,10 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
-import { HardDrive, ShieldAlert, Cpu, ActivitySquare, ShieldCheck, DownloadCloud, Skull, Code, RefreshCw, CheckCircle2, X } from 'lucide-react';
+import { HardDrive, ShieldAlert, Cpu, ActivitySquare, ShieldCheck, DownloadCloud, Skull, Code, RefreshCw, CheckCircle2, X, WifiOff } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import axios from 'axios';
+import { io as socketIO } from 'socket.io-client';
+import { API } from '../config/api';
 
 const dummyData = Array.from({ length: 24 }).map((_, i) => ({
   time: `${i}:00`,
@@ -34,11 +36,11 @@ export const Dashboard = () => {
   const [showRotationModal, setShowRotationModal] = useState(false);
   const [rotationCount, setRotationCount] = useState(89);
   const [expandedFile, setExpandedFile] = useState<string | null>(null);
+  const [isolatedModal, setIsolatedModal] = useState<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const gatewayIP = window.location.hostname;
-  const storageApi = `http://${gatewayIP}:3003/storage`;
-  const encryptApi = `http://${gatewayIP}:3002`;
+  const storageApi = API.storage;
+  const encryptApi = API.encrypt;
   const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
 
   const fetchFiles = async () => {
@@ -50,8 +52,35 @@ export const Dashboard = () => {
     }
   };
 
+  // Connect to Risk Engine via gateway (works both locally and over Vercel+tunnel)
   useEffect(() => {
+    const socket = socketIO(API.socketUrl, {
+      path: '/socket.io',
+      transports: ['websocket', 'polling'],
+    });
+
+    socket.on('risk_update', (data: any) => {
+      setRisk(data.final_composite_score, data.risk_level);
+      setData(prev => {
+        const next = [...prev.slice(-23), { time: 'Now', score: data.ml_anomaly_score }];
+        return next;
+      });
+    });
+
+    socket.on('account_isolated', (payload: any) => {
+      // Show quarantine modal BEFORE clearing token so the user can see what happened
+      setIsolatedModal(payload);
+      setSelfHealingActive(false);
+      // Clear session after 8 seconds to let the modal be read
+      setTimeout(() => {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        window.location.href = '/login';
+      }, 8000);
+    });
+
     fetchFiles();
+    return () => { socket.disconnect(); };
   }, []);
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -116,6 +145,23 @@ export const Dashboard = () => {
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+
+      {/* ATTACKER QUARANTINE MODAL — force-logout countdown */}
+      {isolatedModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-sm animate-in fade-in">
+          <div className="glass-card w-full max-w-lg mx-4 p-8 border-2 border-danger shadow-[0_0_60px_rgba(239,68,68,0.5)] text-center">
+            <WifiOff className="w-16 h-16 text-danger mx-auto mb-4 animate-pulse" />
+            <h2 className="text-2xl font-black text-danger mb-2 uppercase tracking-wider">Session Terminated</h2>
+            <p className="text-white font-semibold mb-4">Your account has been quarantined by the AI Security Engine.</p>
+            <div className="bg-black/50 rounded-xl p-4 text-left space-y-2 mb-6 border border-danger/30">
+              <p className="text-xs text-gray-400"><span className="text-danger font-bold">Reason:</span> {isolatedModal.reason}</p>
+              <p className="text-xs text-gray-400"><span className="text-danger font-bold">ML Score:</span> {((isolatedModal.anomaly_score ?? 0) * 100).toFixed(1)}% probability of HNDL attack</p>
+              <p className="text-xs text-gray-400"><span className="text-accent font-bold">Action Taken:</span> All Kyber-1024 keys rotated. Harvested ciphertext is now invalid.</p>
+            </div>
+            <p className="text-gray-500 text-sm">Redirecting to login in 8 seconds. If this was an error, contact your administrator.</p>
+          </div>
+        </div>
+      )}
 
       {/* Key Rotation Audit Modal */}
       {showRotationModal && (

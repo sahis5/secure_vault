@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Shield, Mail, Lock, User, Eye, EyeOff, Loader2 } from 'lucide-react';
 import axios from 'axios';
 import { useAppStore } from '../store/useAppStore';
+import { API } from '../config/api';
 
 export const Login = () => {
   const navigate = useNavigate();
@@ -16,7 +17,7 @@ export const Login = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const AUTH_URL = `http://${window.location.hostname}:3001/auth`;
+  const AUTH_URL = API.auth;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

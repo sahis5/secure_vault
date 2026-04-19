@@ -1,8 +1,8 @@
-from fastapi import FastAPI, Header, BackgroundTasks
+from fastapi import FastAPI, Header, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
-import uuid, io, os, tempfile, logging, psycopg2
+import uuid, io, os, tempfile, logging, psycopg2, httpx
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ def get_encrypt_status(job_id: str):
     return {"job_id": job_id, "status": res.status, "result": res.result if res.ready() else None}
 
 @app.get("/decrypt/{file_id}")
-async def decrypt_and_download(file_id: str):
+async def decrypt_and_download(file_id: str, background_tasks: BackgroundTasks, request: Request = None):
     from src.workers.tasks import get_minio_client, DATABASE_URL
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -86,10 +86,27 @@ async def decrypt_and_download(file_id: str):
     except Exception as e:
         return {"error": f"Decryption failed: {str(e)}"}
 
+    # --- Emit live ML telemetry to Risk Engine on every download ---
+    RISK_ENGINE_URL = os.getenv("RISK_ENGINE_URL", "http://localhost:3005/ingest")
+    async def emit_download_telemetry():
+        try:
+            async with httpx.AsyncClient(timeout=2) as client:
+                await client.post(RISK_ENGINE_URL, json={
+                    "user_id": record[0] if record else "unknown",
+                    "action_type": "download",
+                    "bytes_transferred_last_1h": len(encrypted_blob),
+                    "download_count_last_1h": 1,
+                    "ip_location_mismatch": 0,
+                    "failed_logins_last_1h": 0,
+                })
+        except Exception:
+            pass
+    background_tasks.add_task(emit_download_telemetry)
+
     return StreamingResponse(
         io.BytesIO(decrypted_bytes),
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f"attachment; filename={original_name}"}
+        headers={"Content-Disposition": f'attachment; filename="{original_name}"'}
     )
 
 
