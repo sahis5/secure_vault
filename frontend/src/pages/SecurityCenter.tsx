@@ -43,6 +43,9 @@ export const SecurityCenter = () => {
     addNotification('⚠ Harvesting attack injected! CRITICAL state. Self-healing activated.', 'warning');
 
     try {
+      // Fire through risk engine → RabbitMQ → Notification Service toast + email
+      axios.post(`${API.risk}/inject-attack`).catch(() => {});
+
       const res = await axios.post(`${API.encrypt}/self-heal/rotate-keys`);
       const result = res.data;
       setRotationLog(result.rotation_log);

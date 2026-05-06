@@ -4,8 +4,8 @@ import { Server as SocketIOServer } from 'socket.io';
 import { createServer } from 'http';
 
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://guest:guest@localhost:5672';
-const ALERT_EMAIL_TO = process.env.ALERT_EMAIL || 'user@shieldcloud.io';
-const SERVICE_EMAIL = process.env.SERVICE_EMAIL || 'security@shieldcloud.io';
+const ALERT_EMAIL_TO = process.env.ALERT_EMAIL || 'security-team@shieldcloud.io';
+const SERVICE_EMAIL = process.env.SERVICE_EMAIL || 'no-reply@shieldcloud.io';
 const NOTIF_PORT = parseInt(process.env.NOTIF_PORT || '3006', 10);
 
 // ── Socket.IO server for real-time frontend push ────────────────────────────
@@ -26,7 +26,7 @@ httpServer.listen(NOTIF_PORT, '0.0.0.0', () => {
   console.log(`[Notification] Real-time Socket.IO server on http://0.0.0.0:${NOTIF_PORT}`);
 });
 
-// ── Mock SMTP Transporter (Ethereal — audit trail, preview URL in console) ──
+// ── Ethereal SMTP Transporter (preview URL in console) ─────────────────────
 let transporter: nodemailer.Transporter;
 
 async function createTransporter() {
@@ -37,7 +37,7 @@ async function createTransporter() {
     secure: testAccount.smtp.secure,
     auth: { user: testAccount.user, pass: testAccount.pass },
   });
-  console.log('[Notification] SMTP mock account ready:', testAccount.user);
+  console.log('[Notification] Ethereal SMTP ready:', testAccount.user);
 }
 
 function formatBytes(bytes: number): string {
@@ -48,30 +48,47 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+function generateTempPassword(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#';
+  return Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+}
+
 async function sendSecurityAlert(payload: Record<string, any>) {
   const anomalyPct = (((payload['anomaly_score'] as number) ?? 0) * 100).toFixed(1);
   const geoKmh = ((payload['geo_velocity_kmh'] as number) ?? 0).toLocaleString();
   const bytesStr = formatBytes((payload['bytes_transferred'] as number) ?? 0);
   const ts = new Date((((payload['timestamp'] as number) ?? Date.now() / 1000)) * 1000).toISOString();
+  const tempPassword = generateTempPassword();
 
-  // ── 1. Push real-time toast to all connected dashboards ───────────────────
+  // ── 1. Push real-time toast to ALL connected dashboards ──────────────────
   const alertPayload = {
     type: 'critical',
-    message: `⚠ HNDL Attack Neutralized! ML Score: ${anomalyPct}% · Geo Velocity: ${geoKmh} km/h · Keys rotated.`,
+    message: `🚨 HNDL Attack neutralized! ML Score: ${anomalyPct}% · All keys rotated. Re-login required.`,
     anomaly_score: payload['anomaly_score'],
     geo_velocity_kmh: payload['geo_velocity_kmh'],
-    bytes_transferred: payload['bytes_transferred'],
     timestamp: ts,
     user_id: payload['user_id'],
+    temp_password: tempPassword,
   };
   io.emit('security_alert', alertPayload);
-  console.log('[Notification] Pushed security_alert to', io.engine.clientsCount, 'connected dashboards');
+  // Also emit force_logout to boot ALL connected sessions
+  io.emit('force_logout', {
+    reason: 'Harvest-Now-Decrypt-Later attack detected. All sessions invalidated for security.',
+    timestamp: ts,
+    temp_password: tempPassword,
+  });
+  console.log(`[Notification] Pushed security_alert + force_logout to ${io.engine.clientsCount} connected clients`);
 
-  // ── 2. Send Ethereal preview email (audit trail) ─────────────────────────
+  // ── 2. Determine recipients (user email from payload, fallback to admin) ──
+  const recipientEmail = (payload['user_email'] as string) || ALERT_EMAIL_TO;
+  const userName = (payload['user_name'] as string) || 'ShieldCloud User';
+
+  // ── 3. Send Ethereal preview email ───────────────────────────────────────
   const html = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <style>
     body { margin:0; padding:0; background:#0D1117; font-family: 'Segoe UI', Arial, sans-serif; color: #E6EDF3; }
     .container { max-width:600px; margin:40px auto; background:#161B22; border-radius:12px; border:1px solid #30363D; overflow:hidden; }
@@ -88,19 +105,25 @@ async function sendSecurityAlert(payload: Record<string, any>) {
     .success-box { background:#0F2A1E; border:1px solid #238636; border-radius:8px; padding:16px; margin-top:24px; }
     .success-box h3 { color:#3FB950; margin:0 0 8px; font-size:14px; }
     .success-box p { color:#7EE8A2; font-size:13px; margin:4px 0; }
+    .pw-box { background:#1A1226; border:2px solid #7C3AED; border-radius:8px; padding:16px; margin-top:16px; text-align:center; }
+    .pw-box p { color:#A78BFA; font-size:12px; margin:0 0 8px; text-transform:uppercase; letter-spacing:.08em; }
+    .pw-box .pw { font-family:monospace; font-size:22px; font-weight:900; color:#DDD6FE; letter-spacing:.15em; }
+    .warning-box { background:#1C1205; border:1px solid #F59E0B; border-radius:8px; padding:16px; margin-top:16px; }
+    .warning-box p { color:#FCD34D; font-size:13px; margin:4px 0; }
     .footer { padding:20px 32px; background:#0D1117; text-align:center; color:#484F58; font-size:12px; }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="header">
-      <h1>ShieldCloud Security Alert</h1>
+      <h1>🛡 ShieldCloud Security Alert</h1>
       <p>Automated threat detection — Immediate action taken</p>
     </div>
     <div class="body">
       <span class="alert-badge">CRITICAL THREAT NEUTRALIZED</span>
       <h2 style="margin:0 0 8px;font-size:18px;">Harvest-Now-Decrypt-Later Attack Detected</h2>
-      <p style="color:#8B949E;font-size:14px;margin:0;">Our XGBoost ML model flagged anomalous activity on your account at <strong style="color:#E6EDF3;">${ts}</strong>. All cryptographic keys have been automatically rotated.</p>
+      <p style="color:#8B949E;font-size:14px;margin:0 0 4px;">Hi <strong style="color:#E6EDF3;">${userName}</strong>,</p>
+      <p style="color:#8B949E;font-size:14px;margin:0;">Our XGBoost ML model flagged an anomalous access attempt on your account at <strong style="color:#E6EDF3;">${ts}</strong>. All cryptographic keys have been automatically rotated and your session has been terminated for security.</p>
       <div class="stat-grid">
         <div class="stat"><label>ML Anomaly Score</label><value>${anomalyPct}%</value></div>
         <div class="stat"><label>Geo Velocity</label><value>${geoKmh} km/h</value></div>
@@ -109,13 +132,21 @@ async function sendSecurityAlert(payload: Record<string, any>) {
       </div>
       <hr class="divider"/>
       <div class="success-box">
-        <h3>Self-Healing Complete</h3>
-        <p>- All AES-256-GCM session keys rotated</p>
-        <p>- All CRYSTALS-Kyber ML-KEM-1024 keypairs regenerated</p>
-        <p>- Attacker session forcibly terminated</p>
-        <p>- Harvested ciphertext is now mathematically useless</p>
+        <h3>✅ Self-Healing Complete</h3>
+        <p>— All AES-256-GCM session keys rotated</p>
+        <p>— All CRYSTALS-Kyber ML-KEM-1024 keypairs regenerated</p>
+        <p>— Your session has been forcibly terminated</p>
+        <p>— Harvested ciphertext is now mathematically useless</p>
       </div>
-      <p style="margin-top:24px;font-size:13px;color:#8B949E;">No action is required from you. Your files remain secure.</p>
+      <div class="warning-box">
+        <p><strong>⚠ ACTION REQUIRED:</strong> You have been logged out of all devices.</p>
+        <p>Use your existing password to log back in. If you suspect your password was compromised, use the temporary password below:</p>
+      </div>
+      <div class="pw-box">
+        <p>Temporary Password (valid 24h)</p>
+        <div class="pw">${tempPassword}</div>
+      </div>
+      <p style="margin-top:24px;font-size:12px;color:#8B949E;">If you did not initiate this, no action is needed — our system has already neutralized the threat. Change your password after logging in.</p>
     </div>
     <div class="footer">ShieldCloud 2026 — Post-Quantum Cloud Security</div>
   </div>
@@ -125,16 +156,17 @@ async function sendSecurityAlert(payload: Record<string, any>) {
   try {
     const info = await transporter.sendMail({
       from: `"ShieldCloud Security" <${SERVICE_EMAIL}>`,
-      to: ALERT_EMAIL_TO,
-      subject: `[CRITICAL] Harvest-Now-Decrypt-Later Attack Neutralized — ${ts}`,
+      to: recipientEmail,
+      subject: `[CRITICAL] Security Alert — HNDL Attack Neutralized & Sessions Invalidated — ${ts}`,
       html,
     });
     console.log('\n================================================================');
-    console.log('  SECURITY EMAIL DISPATCHED (Ethereal Preview)');
-    console.log(`  To      : ${ALERT_EMAIL_TO}`);
-    console.log(`  ML Score: ${anomalyPct}%  |  Geo Velocity: ${geoKmh} km/h`);
+    console.log('  SECURITY EMAIL DISPATCHED');
+    console.log(`  To       : ${recipientEmail}`);
+    console.log(`  ML Score : ${anomalyPct}%  |  Geo: ${geoKmh} km/h`);
+    console.log(`  Temp PW  : ${tempPassword}`);
     console.log('----------------------------------------------------------------');
-    console.log(`  PREVIEW : ${nodemailer.getTestMessageUrl(info)}`);
+    console.log(`  PREVIEW  : ${nodemailer.getTestMessageUrl(info)}`);
     console.log('================================================================\n');
   } catch (e) {
     console.error('[Notification] Email send failed:', e);
@@ -174,9 +206,8 @@ async function startConsumer(): Promise<void> {
         try {
           const payload = JSON.parse(msg.content.toString()) as Record<string, any>;
           console.log('[Notification] Healing complete for:', payload['user_id']);
-          // Also push a "success" event to dashboards
           io.emit('healing_complete', {
-            message: `Key rotation complete for user ${payload['user_id']}. System is now secure.`,
+            message: `✅ Key rotation complete. Your vault is secure again.`,
             timestamp: new Date().toISOString(),
           });
           channel.ack(msg);
@@ -185,7 +216,6 @@ async function startConsumer(): Promise<void> {
         }
       });
 
-      // Keep alive
       await new Promise<void>((_, reject) => {
         (conn as any).on('error', reject);
         (conn as any).on('close', reject);

@@ -104,7 +104,7 @@ export const Dashboard = () => {
   };
 
   const simulateAttack = async () => {
-    // 1. Spike anomaly chart
+    // 1. Spike anomaly chart immediately
     const attackData = [...data];
     attackData[23] = { time: 'Now', score: 0.98 };
     setData(attackData);
@@ -114,7 +114,11 @@ export const Dashboard = () => {
     addNotification('⚠ Harvesting attack injected! CRITICAL state. Self-healing activated.', 'warning');
 
     try {
-      // 2. Call the REAL self-healing endpoint — actual key rotation in DB + MinIO
+      // 2. Fire through risk engine — this triggers RabbitMQ → Notification Service
+      //    → real-time Socket.IO toast on ALL connected devices + Ethereal email
+      axios.post(`${API.risk}/inject-attack`).catch(() => {});
+
+      // 3. Call encryption service directly for the rotation audit log
       const res = await axios.post(`${encryptApi}/self-heal/rotate-keys`);
       const result = res.data;
 
