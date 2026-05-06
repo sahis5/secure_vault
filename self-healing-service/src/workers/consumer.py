@@ -40,7 +40,7 @@ def start_consumer():
             time.sleep(2)
             
     channel = connection.channel()
-    channel.queue_declare(queue='risk.high', durable=True)
+    channel.queue_declare(queue='risk.heal', durable=True)
 
     def callback(ch, method, properties, body):
         try:
@@ -66,7 +66,7 @@ def start_consumer():
             # ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
     channel.basic_qos(prefetch_count=1)
-    channel.basic_consume(queue='risk.high', on_message_callback=callback)
+    channel.basic_consume(queue='risk.heal', on_message_callback=callback)
     
     logger.info('Waiting for risk.high messages to trigger Self-Healing.')
     channel.start_consuming()

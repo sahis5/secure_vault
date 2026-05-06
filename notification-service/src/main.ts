@@ -160,14 +160,23 @@ async function sendSecurityAlert(payload: Record<string, any>) {
       subject: `[CRITICAL] Security Alert — HNDL Attack Neutralized & Sessions Invalidated — ${ts}`,
       html,
     });
-    console.log('\n================================================================');
-    console.log('  SECURITY EMAIL DISPATCHED');
-    console.log(`  To       : ${recipientEmail}`);
-    console.log(`  ML Score : ${anomalyPct}%  |  Geo: ${geoKmh} km/h`);
-    console.log(`  Temp PW  : ${tempPassword}`);
-    console.log('----------------------------------------------------------------');
-    console.log(`  PREVIEW  : ${nodemailer.getTestMessageUrl(info)}`);
-    console.log('================================================================\n');
+    const previewUrl = nodemailer.getTestMessageUrl(info);
+    // Print a very visible banner in the terminal so it's impossible to miss
+    console.log('\n');
+    console.log('╔══════════════════════════════════════════════════════════════╗');
+    console.log('║         SECURITY EMAIL SENT — OPEN THE LINK BELOW           ║');
+    console.log('╠══════════════════════════════════════════════════════════════╣');
+    console.log(`║  To      : ${recipientEmail.padEnd(52)}║`);
+    console.log(`║  ML Score: ${anomalyPct.padEnd(52)}║`);
+    console.log(`║  Temp PW : ${tempPassword.padEnd(52)}║`);
+    console.log('╠══════════════════════════════════════════════════════════════╣');
+    console.log('║  PREVIEW URL (click to see the full HTML email):            ║');
+    console.log(`║  ${String(previewUrl).substring(0, 62).padEnd(62)}║`);
+    if (String(previewUrl).length > 62) {
+      console.log(`║  ${String(previewUrl).substring(62).padEnd(62)}║`);
+    }
+    console.log('╚══════════════════════════════════════════════════════════════╝');
+    console.log('\n');
   } catch (e) {
     console.error('[Notification] Email send failed:', e);
   }
