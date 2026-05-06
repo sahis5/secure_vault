@@ -44,9 +44,11 @@ export const SecurityCenter = () => {
 
     try {
       // Fire through risk engine → RabbitMQ → Notification Service toast + email
-      axios.post(`${API.risk}/inject-attack`).catch(() => {});
+      const userId = useAppStore.getState().user?.id || 'attacker-sim-001';
+      axios.post(`${API.risk}/inject-attack`, { user_id: userId }).catch(() => {});
 
-      const res = await axios.post(`${API.encrypt}/self-heal/rotate-keys`);
+      // Rotate ONLY the current user's files
+      const res = await axios.post(`${API.encrypt}/self-heal/rotate-keys?owner_id=${userId}`);
       const result = res.data;
       setRotationLog(result.rotation_log);
       setRisk(0.12, 'LOW');

@@ -113,17 +113,11 @@ async def decrypt_and_download(file_id: str, background_tasks: BackgroundTasks, 
 # ─── SELF-HEALING: REAL KEY ROTATION ────────────────────────────────────────
 
 @app.post("/self-heal/rotate-keys")
-async def rotate_all_keys():
+async def rotate_all_keys(owner_id: str = None):
     """
-    Self-Healing endpoint triggered after a detected harvesting attack.
-    For every file in the vault:
-      1. Download encrypted blob from MinIO using OLD AES key
-      2. Decrypt plaintext
-      3. Generate a brand-new AES-256 key + new Kyber-1024 keypair
-      4. Re-encrypt plaintext with new key
-      5. Re-upload to MinIO (overwrite the blob)
-      6. Update Postgres with new kyber_ciphertext + new encrypted_aes_key
-    Returns full audit log with old_key_preview vs new_key_preview for each file.
+    Self-Healing endpoint. Rotates Kyber-1024 + AES-256-GCM keys.
+    Pass ?owner_id=<uuid> to rotate only that user's files (compromised account).
+    Omit owner_id to rotate the entire vault (admin global rotation).
     """
     from src.workers.tasks import get_minio_client, DATABASE_URL
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -131,7 +125,19 @@ async def rotate_all_keys():
 
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
-    cur.execute("SELECT id, original_name, minio_bucket, minio_key, encrypted_aes_key FROM files WHERE is_deleted=FALSE AND encrypted_aes_key IS NOT NULL")
+    if owner_id:
+        logger.info(f"[SELF-HEAL] Rotating keys for user {owner_id} only")
+        cur.execute(
+            "SELECT id, original_name, minio_bucket, minio_key, encrypted_aes_key FROM files "
+            "WHERE is_deleted=FALSE AND encrypted_aes_key IS NOT NULL AND owner_id=%s",
+            (owner_id,)
+        )
+    else:
+        logger.info("[SELF-HEAL] Global rotation — rotating ALL users' files")
+        cur.execute(
+            "SELECT id, original_name, minio_bucket, minio_key, encrypted_aes_key FROM files "
+            "WHERE is_deleted=FALSE AND encrypted_aes_key IS NOT NULL"
+        )
     files = cur.fetchall()
     cur.close()
     conn.close()

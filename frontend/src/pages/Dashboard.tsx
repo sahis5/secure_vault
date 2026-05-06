@@ -114,12 +114,12 @@ export const Dashboard = () => {
     addNotification('⚠ Harvesting attack injected! CRITICAL state. Self-healing activated.', 'warning');
 
     try {
-      // 2. Fire through risk engine — this triggers RabbitMQ → Notification Service
-      //    → real-time Socket.IO toast on ALL connected devices + Ethereal email
-      axios.post(`${API.risk}/inject-attack`).catch(() => {});
+      // 2. Fire through risk engine (triggers RabbitMQ → Notification Service → email)
+      const userId = useAppStore.getState().user?.id || 'attacker-sim-001';
+      axios.post(`${API.risk}/inject-attack`, { user_id: userId }).catch(() => {});
 
-      // 3. Call encryption service directly for the rotation audit log
-      const res = await axios.post(`${encryptApi}/self-heal/rotate-keys`);
+      // 3. Rotate ONLY the current user's files (pass owner_id as query param)
+      const res = await axios.post(`${encryptApi}/self-heal/rotate-keys?owner_id=${userId}`);
       const result = res.data;
 
       // 3. Recovery

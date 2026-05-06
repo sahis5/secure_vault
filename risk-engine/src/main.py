@@ -76,11 +76,13 @@ class IngestEvent(BaseModel):
     download_count_last_1h: int = 0
     failed_logins_last_1h: int = 0
     bytes_transferred_last_1h: int = 0
-    # Extended fields for real attack sim
     geo_velocity_kmh: float = 0.0
     vpn_detected: int = 0
     tor_exit_node: int = 0
     is_bulk_download: int = 0
+
+class AttackRequest(BaseModel):
+    user_id: str = "attacker-sim-001"
 
 @sio.event
 async def connect(sid, environ):
@@ -204,43 +206,28 @@ async def ingest_event(event: IngestEvent, background_tasks: BackgroundTasks):
     return result
 
 @app.post("/inject-attack")
-async def inject_attack(background_tasks: BackgroundTasks):
+async def inject_attack(req: AttackRequest = None):
     """Frontend 'Inject Harvesting Attack' button — always fires CRITICAL + self-heal."""
-    fake_event = IngestEvent(
-        user_id="attacker-sim-001",
-        action_type="mass_download",
-        ip_location_mismatch=1,
-        download_count_last_1h=150,
-        failed_logins_last_1h=20,
-        bytes_transferred_last_1h=5_500_000_000,  # 5.5 GB
-        geo_velocity_kmh=12000.0,   # India -> New York in 5 min = impossible travel
-        vpn_detected=1,
-        tor_exit_node=1,
-        is_bulk_download=1,
-    )
-    # Force CRITICAL — bypass ML score threshold for demo reliability
+    uid = (req.user_id if req else None) or "attacker-sim-001"
     alert = {
-        "user_id": fake_event.user_id,
+        "user_id": uid,
         "anomaly_score": 0.98,
         "timestamp": time.time(),
-        "action": fake_event.action_type,
-        "geo_velocity_kmh": fake_event.geo_velocity_kmh,
-        "ip_location_mismatch": fake_event.ip_location_mismatch,
-        "bytes_transferred": fake_event.bytes_transferred_last_1h,
+        "action": "mass_download",
+        "geo_velocity_kmh": 12000.0,
+        "ip_location_mismatch": 1,
+        "bytes_transferred": 5_500_000_000,
         "risk_level": "CRITICAL",
     }
-    # Notify ALL dashboards via Socket.IO
     await sio.emit('account_isolated', {
-        "user_id": fake_event.user_id,
+        "user_id": uid,
         "reason": "Harvest-Now-Decrypt-Later attack detected by XGBoost model",
         "anomaly_score": 0.98,
         "timestamp": time.time(),
     })
-    # Publish to notification queue (email + realtime toast)
     publish_to_rabbitmq(alert, queue="risk.high")
-    # Publish to heal queue (self-healing consumer rotates keys independently)
     publish_to_rabbitmq(alert, queue="risk.heal")
-    return {"status": "attack_injected", "risk_level": "CRITICAL", "anomaly_score": 0.98}
+    return {"status": "attack_injected", "risk_level": "CRITICAL", "anomaly_score": 0.98, "user_id": uid}
 
 @app.get("/health/live")
 def liveness_probe():

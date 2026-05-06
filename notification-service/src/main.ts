@@ -1,14 +1,19 @@
+/**
+ * ShieldCloud Notification Service
+ * - Real-time Socket.IO alerts to all connected dashboards
+ * - Ethereal email preview (prints URL to console — open it in browser)
+ * - Supports per-user context from RabbitMQ payload
+ */
 import * as amqp from 'amqplib';
+import type { Connection, Channel, ConsumeMessage } from 'amqplib';
 import nodemailer from 'nodemailer';
 import { Server as SocketIOServer } from 'socket.io';
 import { createServer } from 'http';
 
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://guest:guest@localhost:5672';
-const ALERT_EMAIL_TO = process.env.ALERT_EMAIL || 'security-team@shieldcloud.io';
-const SERVICE_EMAIL = process.env.SERVICE_EMAIL || 'no-reply@shieldcloud.io';
 const NOTIF_PORT = parseInt(process.env.NOTIF_PORT || '3006', 10);
 
-// ── Socket.IO server for real-time frontend push ────────────────────────────
+// ── Socket.IO server ─────────────────────────────────────────────────────────
 const httpServer = createServer();
 const io = new SocketIOServer(httpServer, {
   cors: { origin: '*', methods: ['GET', 'POST'] },
@@ -17,214 +22,197 @@ const io = new SocketIOServer(httpServer, {
 
 io.on('connection', (socket) => {
   console.log('[Notification] Dashboard connected via Socket.IO:', socket.id);
-  socket.on('disconnect', () => {
-    console.log('[Notification] Dashboard disconnected:', socket.id);
-  });
+  socket.on('disconnect', () => console.log('[Notification] Dashboard disconnected:', socket.id));
 });
 
 httpServer.listen(NOTIF_PORT, '0.0.0.0', () => {
-  console.log(`[Notification] Real-time Socket.IO server on http://0.0.0.0:${NOTIF_PORT}`);
+  console.log(`[Notification] Socket.IO server running on http://0.0.0.0:${NOTIF_PORT}`);
 });
 
-// ── Ethereal SMTP Transporter (preview URL in console) ─────────────────────
-let transporter: nodemailer.Transporter;
+// ── Ethereal transporter (preview URL in console) ────────────────────────────
+let transporter: nodemailer.Transporter | null = null;
+let etherealUser = '';
 
-async function createTransporter() {
-  const testAccount = await nodemailer.createTestAccount();
+async function initTransporter(): Promise<void> {
+  const account = await nodemailer.createTestAccount();
+  etherealUser = account.user;
   transporter = nodemailer.createTransport({
-    host: testAccount.smtp.host,
-    port: testAccount.smtp.port,
-    secure: testAccount.smtp.secure,
-    auth: { user: testAccount.user, pass: testAccount.pass },
+    host: account.smtp.host,
+    port: account.smtp.port,
+    secure: account.smtp.secure,
+    auth: { user: account.user, pass: account.pass },
   });
-  console.log('[Notification] Ethereal SMTP ready:', testAccount.user);
-}
-
-function formatBytes(bytes: number): string {
-  if (!bytes) return '0 B';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  console.log(`[Notification] Ethereal SMTP ready → ${account.user}`);
 }
 
 function generateTempPassword(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#';
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$';
   return Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
 }
 
-async function sendSecurityAlert(payload: Record<string, any>) {
-  const anomalyPct = (((payload['anomaly_score'] as number) ?? 0) * 100).toFixed(1);
-  const geoKmh = ((payload['geo_velocity_kmh'] as number) ?? 0).toLocaleString();
-  const bytesStr = formatBytes((payload['bytes_transferred'] as number) ?? 0);
-  const ts = new Date((((payload['timestamp'] as number) ?? Date.now() / 1000)) * 1000).toISOString();
-  const tempPassword = generateTempPassword();
+function formatBytes(b: number): string {
+  if (!b) return '0 B';
+  if (b < 1024) return `${b} B`;
+  if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`;
+  if (b < 1073741824) return `${(b / 1048576).toFixed(1)} MB`;
+  return `${(b / 1073741824).toFixed(2)} GB`;
+}
 
-  // ── 1. Push real-time toast to ALL connected dashboards ──────────────────
-  const alertPayload = {
-    type: 'critical',
-    message: `🚨 HNDL Attack neutralized! ML Score: ${anomalyPct}% · All keys rotated. Re-login required.`,
-    anomaly_score: payload['anomaly_score'],
-    geo_velocity_kmh: payload['geo_velocity_kmh'],
+async function handleAlert(payload: Record<string, unknown>): Promise<void> {
+  const score   = ((payload.anomaly_score as number) ?? 0);
+  const pct     = (score * 100).toFixed(1);
+  const geo     = ((payload.geo_velocity_kmh as number) ?? 0).toLocaleString();
+  const bytes   = formatBytes((payload.bytes_transferred as number) ?? 0);
+  const ts      = new Date(((payload.timestamp as number) ?? Date.now() / 1000) * 1000).toISOString();
+  const userId  = (payload.user_id as string) ?? 'unknown';
+  const tempPw  = generateTempPassword();
+
+  // 1. Push real-time Socket.IO alert + force_logout to ALL connected clients
+  const clients = io.engine.clientsCount;
+  console.log(`[Notification] Broadcasting to ${clients} connected client(s)...`);
+  io.emit('security_alert', {
+    message: `🚨 HNDL Attack neutralized! Score: ${pct}% · All keys rotated · Re-login required`,
+    anomaly_score: score,
+    geo_velocity_kmh: payload.geo_velocity_kmh,
     timestamp: ts,
-    user_id: payload['user_id'],
-    temp_password: tempPassword,
-  };
-  io.emit('security_alert', alertPayload);
-  // Also emit force_logout to boot ALL connected sessions
-  io.emit('force_logout', {
-    reason: 'Harvest-Now-Decrypt-Later attack detected. All sessions invalidated for security.',
-    timestamp: ts,
-    temp_password: tempPassword,
+    user_id: userId,
+    temp_password: tempPw,
   });
-  console.log(`[Notification] Pushed security_alert + force_logout to ${io.engine.clientsCount} connected clients`);
+  io.emit('force_logout', {
+    reason: 'HNDL attack detected. Your session has been terminated for security.',
+    timestamp: ts,
+    temp_password: tempPw,
+  });
 
-  // ── 2. Determine recipients (user email from payload, fallback to admin) ──
-  const recipientEmail = (payload['user_email'] as string) || ALERT_EMAIL_TO;
-  const userName = (payload['user_name'] as string) || 'ShieldCloud User';
+  // 2. Send Ethereal preview email
+  if (!transporter) {
+    console.error('[Notification] Transporter not ready — skipping email');
+    return;
+  }
 
-  // ── 3. Send Ethereal preview email ───────────────────────────────────────
   const html = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <style>
-    body { margin:0; padding:0; background:#0D1117; font-family: 'Segoe UI', Arial, sans-serif; color: #E6EDF3; }
-    .container { max-width:600px; margin:40px auto; background:#161B22; border-radius:12px; border:1px solid #30363D; overflow:hidden; }
-    .header { background:linear-gradient(135deg,#C0392B,#8E1010); padding:32px; text-align:center; }
-    .header h1 { font-size:24px; font-weight:800; margin:0; letter-spacing:0.05em; }
-    .header p { margin:8px 0 0; color:#FECACA; font-size:14px; }
-    .body { padding:32px; }
-    .alert-badge { display:inline-block; background:#C0392B22; border:1px solid #C0392B; color:#FC8181; padding:4px 12px; border-radius:20px; font-size:12px; font-weight:700; letter-spacing:.1em; margin-bottom:24px; }
-    .stat-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin:24px 0; }
-    .stat { background:#0D1117; border:1px solid #30363D; border-radius:8px; padding:16px; }
-    .stat label { display:block; font-size:10px; color:#8B949E; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }
-    .stat value { font-size:18px; font-weight:700; color:#F85149; }
-    .divider { border:none; border-top:1px solid #30363D; margin:24px 0; }
-    .success-box { background:#0F2A1E; border:1px solid #238636; border-radius:8px; padding:16px; margin-top:24px; }
-    .success-box h3 { color:#3FB950; margin:0 0 8px; font-size:14px; }
-    .success-box p { color:#7EE8A2; font-size:13px; margin:4px 0; }
-    .pw-box { background:#1A1226; border:2px solid #7C3AED; border-radius:8px; padding:16px; margin-top:16px; text-align:center; }
-    .pw-box p { color:#A78BFA; font-size:12px; margin:0 0 8px; text-transform:uppercase; letter-spacing:.08em; }
-    .pw-box .pw { font-family:monospace; font-size:22px; font-weight:900; color:#DDD6FE; letter-spacing:.15em; }
-    .warning-box { background:#1C1205; border:1px solid #F59E0B; border-radius:8px; padding:16px; margin-top:16px; }
-    .warning-box p { color:#FCD34D; font-size:13px; margin:4px 0; }
-    .footer { padding:20px 32px; background:#0D1117; text-align:center; color:#484F58; font-size:12px; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="header">
-      <h1>🛡 ShieldCloud Security Alert</h1>
-      <p>Automated threat detection — Immediate action taken</p>
+<html><head><meta charset="utf-8"/>
+<style>
+  body{margin:0;padding:0;background:#0D1117;font-family:Arial,sans-serif;color:#E6EDF3}
+  .wrap{max-width:600px;margin:32px auto;background:#161B22;border-radius:12px;border:1px solid #30363D;overflow:hidden}
+  .hdr{background:linear-gradient(135deg,#B91C1C,#7F1D1D);padding:28px;text-align:center}
+  .hdr h1{font-size:22px;font-weight:900;margin:0}
+  .hdr p{margin:6px 0 0;color:#FCA5A5;font-size:13px}
+  .body{padding:28px}
+  .badge{display:inline-block;background:#B91C1C22;border:1px solid #B91C1C;color:#FCA5A5;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;margin-bottom:20px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:20px 0}
+  .box{background:#0D1117;border:1px solid #21262D;border-radius:8px;padding:14px}
+  .box label{display:block;font-size:10px;color:#8B949E;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
+  .box value{font-size:17px;font-weight:700;color:#F85149}
+  .ok{background:#0A2F1F;border:1px solid #238636;border-radius:8px;padding:14px;margin-top:16px}
+  .ok h3{color:#3FB950;margin:0 0 8px;font-size:13px}
+  .ok p{color:#7EE8A2;font-size:12px;margin:3px 0}
+  .warn{background:#1A0E00;border:1px solid #F59E0B;border-radius:8px;padding:14px;margin-top:12px}
+  .warn p{color:#FCD34D;font-size:12px;margin:3px 0}
+  .pw-box{background:#1A1226;border:2px solid #7C3AED;border-radius:10px;padding:16px;margin-top:14px;text-align:center}
+  .pw-box p{color:#A78BFA;font-size:11px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.08em}
+  .pw-box .pw{font-family:monospace;font-size:24px;font-weight:900;color:#DDD6FE;letter-spacing:.15em}
+  .footer{padding:16px 28px;background:#0D1117;text-align:center;color:#484F58;font-size:11px}
+</style></head>
+<body><div class="wrap">
+  <div class="hdr"><h1>🛡 ShieldCloud Security Alert</h1><p>Automated threat response — ${ts}</p></div>
+  <div class="body">
+    <span class="badge">CRITICAL THREAT NEUTRALIZED</span>
+    <h2 style="margin:0 0 6px;font-size:17px">Harvest-Now-Decrypt-Later Attack Detected</h2>
+    <p style="color:#8B949E;font-size:13px;margin:0">Your account's XGBoost ML anomaly detector flagged a suspicious access pattern.</p>
+    <div class="grid">
+      <div class="box"><label>ML Anomaly Score</label><value>${pct}%</value></div>
+      <div class="box"><label>Geo Velocity</label><value>${geo} km/h</value></div>
+      <div class="box"><label>Data Targeted</label><value style="font-size:13px">${bytes}</value></div>
+      <div class="box"><label>Attack Vector</label><value style="font-size:12px">${payload.ip_location_mismatch ? 'Foreign IP / VPN' : 'Insider Threat'}</value></div>
     </div>
-    <div class="body">
-      <span class="alert-badge">CRITICAL THREAT NEUTRALIZED</span>
-      <h2 style="margin:0 0 8px;font-size:18px;">Harvest-Now-Decrypt-Later Attack Detected</h2>
-      <p style="color:#8B949E;font-size:14px;margin:0 0 4px;">Hi <strong style="color:#E6EDF3;">${userName}</strong>,</p>
-      <p style="color:#8B949E;font-size:14px;margin:0;">Our XGBoost ML model flagged an anomalous access attempt on your account at <strong style="color:#E6EDF3;">${ts}</strong>. All cryptographic keys have been automatically rotated and your session has been terminated for security.</p>
-      <div class="stat-grid">
-        <div class="stat"><label>ML Anomaly Score</label><value>${anomalyPct}%</value></div>
-        <div class="stat"><label>Geo Velocity</label><value>${geoKmh} km/h</value></div>
-        <div class="stat"><label>Data Targeted</label><value>${bytesStr}</value></div>
-        <div class="stat"><label>Attack Vector</label><value style="font-size:13px;">${payload['ip_location_mismatch'] ? 'Foreign IP / VPN' : 'Insider Threat'}</value></div>
-      </div>
-      <hr class="divider"/>
-      <div class="success-box">
-        <h3>✅ Self-Healing Complete</h3>
-        <p>— All AES-256-GCM session keys rotated</p>
-        <p>— All CRYSTALS-Kyber ML-KEM-1024 keypairs regenerated</p>
-        <p>— Your session has been forcibly terminated</p>
-        <p>— Harvested ciphertext is now mathematically useless</p>
-      </div>
-      <div class="warning-box">
-        <p><strong>⚠ ACTION REQUIRED:</strong> You have been logged out of all devices.</p>
-        <p>Use your existing password to log back in. If you suspect your password was compromised, use the temporary password below:</p>
-      </div>
-      <div class="pw-box">
-        <p>Temporary Password (valid 24h)</p>
-        <div class="pw">${tempPassword}</div>
-      </div>
-      <p style="margin-top:24px;font-size:12px;color:#8B949E;">If you did not initiate this, no action is needed — our system has already neutralized the threat. Change your password after logging in.</p>
+    <div class="ok">
+      <h3>✅ Self-Healing Complete — Your Files Are Secure</h3>
+      <p>• All AES-256-GCM encryption keys rotated</p>
+      <p>• All ML-KEM-1024 (Kyber) keypairs regenerated</p>
+      <p>• Your session terminated across all devices</p>
+      <p>• Harvested ciphertext is now mathematically useless</p>
     </div>
-    <div class="footer">ShieldCloud 2026 — Post-Quantum Cloud Security</div>
+    <div class="warn">
+      <p><strong>⚠ ACTION REQUIRED:</strong> You have been signed out of all devices.</p>
+      <p>Use the temporary password below to log back in, then update your password.</p>
+    </div>
+    <div class="pw-box">
+      <p>Temporary Password (valid 24 hours)</p>
+      <div class="pw">${tempPw}</div>
+    </div>
+    <p style="margin-top:20px;font-size:11px;color:#8B949E">User ID: ${userId} · Detected: ${ts}</p>
   </div>
-</body>
-</html>`;
+  <div class="footer">ShieldCloud 2026 — Post-Quantum Cloud Security</div>
+</div></body></html>`;
 
   try {
     const info = await transporter.sendMail({
-      from: `"ShieldCloud Security" <${SERVICE_EMAIL}>`,
-      to: recipientEmail,
-      subject: `[CRITICAL] Security Alert — HNDL Attack Neutralized & Sessions Invalidated — ${ts}`,
+      from: '"ShieldCloud Security" <no-reply@shieldcloud.io>',
+      to:   etherealUser,   // Ethereal always delivers to test account
+      subject: `[CRITICAL] HNDL Attack Neutralized — Re-login Required — ${ts}`,
       html,
     });
-    const previewUrl = nodemailer.getTestMessageUrl(info);
-    // Print a very visible banner in the terminal so it's impossible to miss
-    console.log('\n');
-    console.log('╔══════════════════════════════════════════════════════════════╗');
-    console.log('║         SECURITY EMAIL SENT — OPEN THE LINK BELOW           ║');
-    console.log('╠══════════════════════════════════════════════════════════════╣');
-    console.log(`║  To      : ${recipientEmail.padEnd(52)}║`);
-    console.log(`║  ML Score: ${anomalyPct.padEnd(52)}║`);
-    console.log(`║  Temp PW : ${tempPassword.padEnd(52)}║`);
-    console.log('╠══════════════════════════════════════════════════════════════╣');
-    console.log('║  PREVIEW URL (click to see the full HTML email):            ║');
-    console.log(`║  ${String(previewUrl).substring(0, 62).padEnd(62)}║`);
-    if (String(previewUrl).length > 62) {
-      console.log(`║  ${String(previewUrl).substring(62).padEnd(62)}║`);
-    }
-    console.log('╚══════════════════════════════════════════════════════════════╝');
-    console.log('\n');
-  } catch (e) {
-    console.error('[Notification] Email send failed:', e);
+    const url = nodemailer.getTestMessageUrl(info);
+
+    console.log('\n╔═══════════════════════════════════════════════════════════╗');
+    console.log('║     SECURITY EMAIL SENT — CLICK THE URL BELOW            ║');
+    console.log('╠═══════════════════════════════════════════════════════════╣');
+    console.log(`║  ML Score : ${pct}%`.padEnd(62) + '║');
+    console.log(`║  Temp PW  : ${tempPw}`.padEnd(62) + '║');
+    console.log('╠═══════════════════════════════════════════════════════════╣');
+    console.log('║  EMAIL PREVIEW (open in browser):'.padEnd(62) + '║');
+    console.log(`║  ${String(url)}`.substring(0, 62).padEnd(62) + '║');
+    console.log('╚═══════════════════════════════════════════════════════════╝\n');
+  } catch (err) {
+    console.error('[Notification] Email failed:', err);
   }
 }
 
+// ── RabbitMQ consumer ────────────────────────────────────────────────────────
 async function startConsumer(): Promise<void> {
-  await createTransporter();
+  await initTransporter();
 
   let retries = 0;
   while (true) {
     try {
-      const conn = await amqp.connect(RABBITMQ_URL);
-      const channel = await (conn as any).createChannel();
-
-      await channel.assertQueue('risk.high', { durable: true });
-      await channel.assertQueue('healing.complete', { durable: true });
-
-      console.log('[Notification] Connected to RabbitMQ. Waiting for security events...');
+      const conn = await amqp.connect(RABBITMQ_URL) as unknown as Connection;
+      const ch   = await conn.createChannel() as unknown as Channel;
       retries = 0;
 
-      channel.consume('risk.high', async (msg: amqp.GetMessage | null) => {
+      // Declare both queues this service cares about
+      await ch.assertQueue('risk.high',       { durable: true });
+      await ch.assertQueue('healing.complete', { durable: true });
+      await ch.prefetch(1);
+
+      console.log('[Notification] Connected to RabbitMQ. Listening on risk.high ...');
+
+      // *** AWAIT the consume calls so the consumer is fully registered ***
+      await ch.consume('risk.high', async (msg: ConsumeMessage | null) => {
+        if (!msg) return;
+        console.log('[Notification] *** risk.high message received ***');
+        try {
+          const payload = JSON.parse(msg.content.toString()) as Record<string, unknown>;
+          await handleAlert(payload);
+          ch.ack(msg);
+        } catch (e) {
+          console.error('[Notification] Failed to handle alert:', e);
+          ch.nack(msg, false, false);
+        }
+      }, { noAck: false });
+
+      await ch.consume('healing.complete', async (msg: ConsumeMessage | null) => {
         if (!msg) return;
         try {
-          const payload = JSON.parse(msg.content.toString()) as Record<string, any>;
-          console.log('[Notification] CRITICAL alert received for user:', payload['user_id']);
-          await sendSecurityAlert(payload);
-          channel.ack(msg);
+          const payload = JSON.parse(msg.content.toString()) as Record<string, unknown>;
+          io.emit('healing_complete', { message: '✅ Key rotation complete. Your vault is secure.', timestamp: new Date().toISOString() });
+          ch.ack(msg);
         } catch (e) {
-          console.error('[Notification] Failed to process alert:', e);
-          channel.nack(msg, false, false);
+          ch.nack(msg, false, false);
         }
-      });
+      }, { noAck: false });
 
-      channel.consume('healing.complete', async (msg: amqp.GetMessage | null) => {
-        if (!msg) return;
-        try {
-          const payload = JSON.parse(msg.content.toString()) as Record<string, any>;
-          console.log('[Notification] Healing complete for:', payload['user_id']);
-          io.emit('healing_complete', {
-            message: `✅ Key rotation complete. Your vault is secure again.`,
-            timestamp: new Date().toISOString(),
-          });
-          channel.ack(msg);
-        } catch (e) {
-          channel.nack(msg, false, false);
-        }
-      });
-
+      // Keep alive — reconnect if connection drops
       await new Promise<void>((_, reject) => {
         (conn as any).on('error', reject);
         (conn as any).on('close', reject);
@@ -232,7 +220,7 @@ async function startConsumer(): Promise<void> {
     } catch (e) {
       retries++;
       const wait = Math.min(retries * 3, 30);
-      console.log(`[Notification] RabbitMQ unavailable. Retry in ${wait}s...`);
+      console.log(`[Notification] RabbitMQ unavailable. Retry in ${wait}s... (attempt ${retries})`);
       await new Promise(r => setTimeout(r, wait * 1000));
     }
   }
