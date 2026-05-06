@@ -157,17 +157,29 @@ if ($cloudflaredCmd) {
 
     $tunnelJob = Start-Job -Name "Tunnel" -ScriptBlock {
         param($cmd, $log)
-        & $cmd tunnel --url http://localhost:5173 2>&1 | Tee-Object -FilePath $log
+        # Use Add-Content (opens/closes per line) so the file is never exclusively locked
+        & $cmd tunnel --url http://localhost:5173 2>&1 | ForEach-Object {
+            $_ | Add-Content -Path $log -Encoding UTF8
+            $_  # Also emit to job stream so logs are streamed to terminal
+        }
     } -ArgumentList $cloudflaredCmd, $cfLog
 
-    # Poll for Cloudflare public URL (format: https://xxxx.trycloudflare.com)
-    for ($i = 0; $i -lt 20; $i++) {
+    # Wait a moment for cloudflared to initialise before polling
+    Start-Sleep -Seconds 3
+
+    # Poll for Cloudflare public URL using FileShare.ReadWrite so we never block
+    for ($i = 0; $i -lt 30; $i++) {
         Start-Sleep -Seconds 1
         if (Test-Path $cfLog) {
-            $txt = [System.IO.File]::ReadAllText($cfLog)
-            if ($txt -match "https://[a-z0-9\-]+\.trycloudflare\.com") {
-                $pubUrl = $Matches[0]; break
-            }
+            try {
+                $stream = [System.IO.File]::Open($cfLog, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                $reader = New-Object System.IO.StreamReader($stream)
+                $txt    = $reader.ReadToEnd()
+                $reader.Close(); $stream.Close()
+                if ($txt -match "https://[a-z0-9\-]+\.trycloudflare\.com") {
+                    $pubUrl = $Matches[0]; break
+                }
+            } catch { <# file not ready yet, retry #> }
         }
     }
     Write-Host "       OK - Cloudflare Tunnel active" -ForegroundColor Green
