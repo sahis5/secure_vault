@@ -43,3 +43,20 @@
     @apply w-full px-4 py-3 bg-surfaceHighlight/50 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-transparent text-white placeholder-gray-400 transition-all duration-200;
   }
 }
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+/* Animate-in utilities (Tailwind v4 fallback) */
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slide-in-from-bottom { from { transform: translateY(1rem); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes slide-in-from-right { from { transform: translateX(1rem); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+.animate-in.fade-in { animation: fade-in 0.4s ease both; }
+.animate-in.slide-in-from-bottom-4 { animation: slide-in-from-bottom 0.5s ease both; }
+.animate-in.slide-in-from-right-4 { animation: slide-in-from-right 0.3s ease both; }
+.duration-300 { animation-duration: 0.3s; }
+.duration-700 { animation-duration: 0.7s; }

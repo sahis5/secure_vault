@@ -54,4 +54,22 @@ export class AppService {
   verifyToken(token: string) {
     return jwt.verify(token, JWT_SECRET) as { id: string; email: string; name: string; role: string };
   }
+
+  async getAllUsers() {
+    const res = await pool.query(
+      `SELECT id, email, role, created_at FROM users ORDER BY created_at DESC`
+    );
+    return { users: res.rows };
+  }
+
+  async changePassword(userId: string, currentPassword: string, newPassword: string) {
+    const res = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+    if (res.rows.length === 0) throw new Error('User not found');
+    const user = res.rows[0];
+    const valid = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!valid) throw new Error('Current password is incorrect');
+    const newHash = await bcrypt.hash(newPassword, 12);
+    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, userId]);
+    return { success: true, message: 'Password updated successfully' };
+  }
 }

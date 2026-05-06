@@ -52,6 +52,12 @@ export default defineConfig({
         target: 'http://127.0.0.1:3004',
         changeOrigin: true,
       },
+      // Notification Service (Socket.IO real-time alerts)
+      '/notifications': {
+        target: 'http://127.0.0.1:3006',
+        changeOrigin: true,
+        ws: true,
+      },
     },
   },
 })

@@ -1,11 +1,54 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { Shield, Home, FolderLock, Activity, Settings, Users, LogOut } from 'lucide-react';
+import { Shield, Home, FolderLock, Activity, Settings, Users, LogOut, Bell, Wifi, WifiOff } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { NotificationToast } from './NotificationToast';
+import { useEffect, useRef, useState } from 'react';
+import { io as socketIO } from 'socket.io-client';
+import { API } from '../config/api';
 
 const Sidebar = () => {
-  const { riskLevel, riskScore, user, logout, addNotification } = useAppStore();
+  const { riskLevel, riskScore, user, logout, addNotification, notifications } = useAppStore();
   const navigate = useNavigate();
+  const [connected, setConnected] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const socketRef = useRef<any>(null);
+
+  // Track unread notification count (increment on each new notification)
+  const prevNotifCount = useRef(notifications.length);
+  useEffect(() => {
+    if (notifications.length > prevNotifCount.current) {
+      setUnreadCount(c => c + (notifications.length - prevNotifCount.current));
+    }
+    prevNotifCount.current = notifications.length;
+  }, [notifications]);
+
+  // Connect to notification service Socket.IO
+  useEffect(() => {
+    const socket = socketIO(API.notifSocketUrl, {
+      path: '/notifications',
+      transports: ['websocket', 'polling'],
+    });
+
+    socket.on('connect', () => {
+      setConnected(true);
+      console.log('[Notification WS] Connected');
+    });
+
+    socket.on('disconnect', () => {
+      setConnected(false);
+    });
+
+    socket.on('security_alert', (data: any) => {
+      addNotification(`🚨 Security Alert: ${data.message}`, 'error');
+    });
+
+    socket.on('healing_complete', (data: any) => {
+      addNotification(`✅ ${data.message}`, 'success');
+    });
+
+    socketRef.current = socket;
+    return () => { socket.disconnect(); };
+  }, []);
 
   const getRiskColor = () => {
     switch(riskLevel) {
@@ -42,6 +85,19 @@ const Sidebar = () => {
           <h1 className="font-bold text-xl tracking-tight text-white">ShieldCloud</h1>
           <p className="text-xs text-gray-400 font-medium tracking-wider">PQC SECURED</p>
         </div>
+        {/* Notification bell */}
+        <button
+          className="ml-auto relative p-1.5 rounded-lg hover:bg-white/10 transition-colors"
+          title="Notifications"
+          onClick={() => setUnreadCount(0)}
+        >
+          <Bell className="w-4 h-4 text-gray-400" />
+          {unreadCount > 0 && (
+            <span className="absolute -top-1 -right-1 w-4 h-4 bg-danger rounded-full flex items-center justify-center text-[9px] font-black text-white animate-pulse">
+              {unreadCount > 9 ? '9+' : unreadCount}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* User badge */}
@@ -83,9 +139,15 @@ const Sidebar = () => {
         ))}
       </nav>
 
+      {/* Connection status */}
+      <div className={`flex items-center gap-2 px-3 py-2 rounded-lg mb-2 text-xs font-medium ${connected ? 'text-accent' : 'text-gray-600'}`}>
+        {connected ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
+        {connected ? 'Risk Engine Connected' : 'Reconnecting...'}
+      </div>
+
       <button
         onClick={handleLogout}
-        className="flex items-center gap-3 px-4 py-2.5 text-gray-400 hover:text-danger hover:bg-danger/10 rounded-lg transition-all mt-4 text-sm"
+        className="flex items-center gap-3 px-4 py-2.5 text-gray-400 hover:text-danger hover:bg-danger/10 rounded-lg transition-all mt-1 text-sm"
       >
         <LogOut className="w-4 h-4" /> Sign Out
       </button>

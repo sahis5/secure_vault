@@ -27,11 +27,11 @@ app.use((req, res, next) => {
 app.get('/health', (req, res) => res.json({ status: 'ok', service: 'ShieldCloud-Gateway' }));
 
 const services = [
-  { paths: ['/auth'],                           target: 'http://localhost:3001' },
-  { paths: ['/storage'],                        target: 'http://localhost:3003' },
+  { paths: ['/auth'],                              target: 'http://localhost:3001' },
+  { paths: ['/storage'],                           target: 'http://localhost:3003' },
   { paths: ['/encrypt', '/decrypt', '/self-heal'], target: 'http://localhost:3002' },
-  { paths: ['/ingest', '/inject-attack'],       target: 'http://localhost:3005' },
-  { paths: ['/analyze'],                        target: 'http://localhost:3004' },
+  { paths: ['/ingest', '/inject-attack'],          target: 'http://localhost:3005' },
+  { paths: ['/analyze'],                           target: 'http://localhost:3004' },
 ];
 
 services.forEach(({ paths, target }) => {
@@ -53,8 +53,23 @@ const socketProxy = createProxyMiddleware({
 });
 app.use('/socket.io', socketProxy);
 
+// Socket.IO (WebSocket) proxy for Notification Service
+const notifProxy = createProxyMiddleware({
+  target: 'http://localhost:3006',
+  changeOrigin: true,
+  ws: true,
+  logLevel: 'warn',
+});
+app.use('/notifications', notifProxy);
+
 const server = http.createServer(app);
-server.on('upgrade', socketProxy.upgrade);
+server.on('upgrade', (req, socket, head) => {
+  if (req.url && req.url.startsWith('/notifications')) {
+    notifProxy.upgrade(req, socket, head);
+  } else {
+    socketProxy.upgrade(req, socket, head);
+  }
+});
 
 const PORT = process.env.GATEWAY_PORT || 8080;
 server.listen(PORT, '0.0.0.0', () => {

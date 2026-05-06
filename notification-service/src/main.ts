@@ -1,11 +1,32 @@
 import * as amqp from 'amqplib';
 import nodemailer from 'nodemailer';
+import { Server as SocketIOServer } from 'socket.io';
+import { createServer } from 'http';
 
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://guest:guest@localhost:5672';
 const ALERT_EMAIL_TO = process.env.ALERT_EMAIL || 'user@shieldcloud.io';
 const SERVICE_EMAIL = process.env.SERVICE_EMAIL || 'security@shieldcloud.io';
+const NOTIF_PORT = parseInt(process.env.NOTIF_PORT || '3006', 10);
 
-// ── Mock SMTP Transporter (Ethereal — no real credentials needed) ─────────────
+// ── Socket.IO server for real-time frontend push ────────────────────────────
+const httpServer = createServer();
+const io = new SocketIOServer(httpServer, {
+  cors: { origin: '*', methods: ['GET', 'POST'] },
+  path: '/notifications',
+});
+
+io.on('connection', (socket) => {
+  console.log('[Notification] Dashboard connected via Socket.IO:', socket.id);
+  socket.on('disconnect', () => {
+    console.log('[Notification] Dashboard disconnected:', socket.id);
+  });
+});
+
+httpServer.listen(NOTIF_PORT, '0.0.0.0', () => {
+  console.log(`[Notification] Real-time Socket.IO server on http://0.0.0.0:${NOTIF_PORT}`);
+});
+
+// ── Mock SMTP Transporter (Ethereal — audit trail, preview URL in console) ──
 let transporter: nodemailer.Transporter;
 
 async function createTransporter() {
@@ -33,6 +54,20 @@ async function sendSecurityAlert(payload: Record<string, any>) {
   const bytesStr = formatBytes((payload['bytes_transferred'] as number) ?? 0);
   const ts = new Date((((payload['timestamp'] as number) ?? Date.now() / 1000)) * 1000).toISOString();
 
+  // ── 1. Push real-time toast to all connected dashboards ───────────────────
+  const alertPayload = {
+    type: 'critical',
+    message: `⚠ HNDL Attack Neutralized! ML Score: ${anomalyPct}% · Geo Velocity: ${geoKmh} km/h · Keys rotated.`,
+    anomaly_score: payload['anomaly_score'],
+    geo_velocity_kmh: payload['geo_velocity_kmh'],
+    bytes_transferred: payload['bytes_transferred'],
+    timestamp: ts,
+    user_id: payload['user_id'],
+  };
+  io.emit('security_alert', alertPayload);
+  console.log('[Notification] Pushed security_alert to', io.engine.clientsCount, 'connected dashboards');
+
+  // ── 2. Send Ethereal preview email (audit trail) ─────────────────────────
   const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -60,7 +95,7 @@ async function sendSecurityAlert(payload: Record<string, any>) {
   <div class="container">
     <div class="header">
       <h1>ShieldCloud Security Alert</h1>
-      <p>Automated threat detection -- Immediate action taken</p>
+      <p>Automated threat detection — Immediate action taken</p>
     </div>
     <div class="body">
       <span class="alert-badge">CRITICAL THREAT NEUTRALIZED</span>
@@ -82,7 +117,7 @@ async function sendSecurityAlert(payload: Record<string, any>) {
       </div>
       <p style="margin-top:24px;font-size:13px;color:#8B949E;">No action is required from you. Your files remain secure.</p>
     </div>
-    <div class="footer">ShieldCloud 2026 - Post-Quantum Cloud Security</div>
+    <div class="footer">ShieldCloud 2026 — Post-Quantum Cloud Security</div>
   </div>
 </body>
 </html>`;
@@ -91,11 +126,11 @@ async function sendSecurityAlert(payload: Record<string, any>) {
     const info = await transporter.sendMail({
       from: `"ShieldCloud Security" <${SERVICE_EMAIL}>`,
       to: ALERT_EMAIL_TO,
-      subject: `[CRITICAL] Harvest-Now-Decrypt-Later Attack Neutralized -- ${ts}`,
+      subject: `[CRITICAL] Harvest-Now-Decrypt-Later Attack Neutralized — ${ts}`,
       html,
     });
     console.log('\n================================================================');
-    console.log('  SECURITY EMAIL DISPATCHED');
+    console.log('  SECURITY EMAIL DISPATCHED (Ethereal Preview)');
     console.log(`  To      : ${ALERT_EMAIL_TO}`);
     console.log(`  ML Score: ${anomalyPct}%  |  Geo Velocity: ${geoKmh} km/h`);
     console.log('----------------------------------------------------------------');
@@ -112,7 +147,6 @@ async function startConsumer(): Promise<void> {
   let retries = 0;
   while (true) {
     try {
-      // amqplib >= 0.10 connect() returns a ChannelModel (which has createChannel)
       const conn = await amqp.connect(RABBITMQ_URL);
       const channel = await (conn as any).createChannel();
 
@@ -140,6 +174,11 @@ async function startConsumer(): Promise<void> {
         try {
           const payload = JSON.parse(msg.content.toString()) as Record<string, any>;
           console.log('[Notification] Healing complete for:', payload['user_id']);
+          // Also push a "success" event to dashboards
+          io.emit('healing_complete', {
+            message: `Key rotation complete for user ${payload['user_id']}. System is now secure.`,
+            timestamp: new Date().toISOString(),
+          });
           channel.ack(msg);
         } catch (e) {
           channel.nack(msg, false, false);

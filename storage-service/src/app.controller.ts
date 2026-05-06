@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Headers, UseInterceptors, UploadedFile, HttpException, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Param, Headers, UseInterceptors, UploadedFile, HttpException, HttpStatus } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { query } from './db';
 import axios from 'axios';
@@ -85,5 +85,26 @@ export class AppController {
       ? await query('SELECT id, owner_id, original_name, size_bytes, kyber_ciphertext, encrypted_aes_key, created_at FROM files WHERE is_deleted=FALSE ORDER BY created_at DESC')
       : await query('SELECT id, owner_id, original_name, size_bytes, kyber_ciphertext, encrypted_aes_key, created_at FROM files WHERE is_deleted=FALSE AND owner_id=$1 ORDER BY created_at DESC', [ownerId]);
     return { files: res.rows };
+  }
+
+  @Delete('files/:id')
+  async deleteFile(
+    @Param('id') fileId: string,
+    @Headers('authorization') auth: string,
+  ) {
+    const ownerId = extractUserId(auth);
+    // Verify ownership
+    const check = await query('SELECT id, minio_key FROM files WHERE id=$1 AND owner_id=$2 AND is_deleted=FALSE', [fileId, ownerId]);
+    if (check.rows.length === 0) {
+      throw new HttpException('File not found or access denied', HttpStatus.NOT_FOUND);
+    }
+    // Soft delete in PostgreSQL
+    await query('UPDATE files SET is_deleted=TRUE WHERE id=$1', [fileId]);
+    // Best-effort MinIO delete via encryption service
+    try {
+      const ENCRYPT_SERVICE = process.env.ENCRYPT_SERVICE_URL || 'http://127.0.0.1:3002';
+      await axios.delete(`${ENCRYPT_SERVICE}/encrypt/file/${fileId}`).catch(() => {});
+    } catch (e) {}
+    return { success: true, file_id: fileId };
   }
 }

@@ -47,4 +47,46 @@ export class AppController {
       throw new UnauthorizedException('Invalid token');
     }
   }
+
+  @Get('users')
+  async getUsers(@Headers('authorization') auth: string) {
+    if (!auth?.startsWith('Bearer ')) throw new UnauthorizedException('No token');
+    try {
+      const caller = this.appService.verifyToken(auth.slice(7));
+      if (caller.role !== 'admin') throw new UnauthorizedException('Admin only');
+    } catch {
+      throw new UnauthorizedException('Invalid token or insufficient role');
+    }
+    try {
+      return await this.appService.getAllUsers();
+    } catch (e: any) {
+      throw new BadRequestException(e.message);
+    }
+  }
+
+  @Post('change-password')
+  async changePassword(
+    @Headers('authorization') auth: string,
+    @Body() body: { currentPassword: string; newPassword: string },
+  ) {
+    if (!auth?.startsWith('Bearer ')) throw new UnauthorizedException('No token');
+    let userId: string;
+    try {
+      const payload = this.appService.verifyToken(auth.slice(7));
+      userId = payload.id;
+    } catch {
+      throw new UnauthorizedException('Invalid token');
+    }
+    if (!body.currentPassword || !body.newPassword) {
+      throw new BadRequestException('currentPassword and newPassword are required');
+    }
+    if (body.newPassword.length < 6) {
+      throw new BadRequestException('New password must be at least 6 characters');
+    }
+    try {
+      return await this.appService.changePassword(userId, body.currentPassword, body.newPassword);
+    } catch (e: any) {
+      throw new BadRequestException(e.message);
+    }
+  }
 }
